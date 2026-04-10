@@ -1,0 +1,19 @@
+data:
+  raw_path: data/raw/fraud_emails.csv
+  processed_path: data/processed/emails_clean.csv
+
+model:
+  tfidf_max_features: 10000
+  smote_k_neighbors: 5
+  random_state: 42
+  test_size: 0.2
+
+mlflow:
+  experiment_name: fraud-detection
+
+bert:
+  epochs: 3        # ne pas augmenter tant que la loss diverge
+  batch_size: 16   # gradient plus stable qu'à 8
+  max_length: 128
+  fp16: true           # mixed precision → divise la VRAM par ~2
+  gradient_checkpointing: true  # économise ~30% VRAM supplémentaire

@@ -1,0 +1,34 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+
+# Data
+data/raw/
+data/processed/*.csv
+
+# Modèles
+models/*.joblib
+models/bert/
+
+# Logs
+logs/
+mlruns/
+mlflow.db
+*.log
+*.jsonl
+
+# Airflow
+airflow_data/
+airflow.db
+
+# Env
+.env
+infra/.env.prod
+*.pem
+
+# Notebooks
+.ipynb_checkpoints/
+
+# VS Code
+.vscode/

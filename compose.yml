@@ -1,0 +1,141 @@
+services:
+
+  # ── MLflow ───────────────────────────────────────────────
+
+  mlflow:
+    image: python:3.11-slim
+    container_name: fraud-mlflow
+    environment:
+      - MLFLOW_DISABLE_HOST_CHECK=true
+      - MLFLOW_SERVER_ALLOWED_HOSTS=*
+    command: >
+     bash -c "pip install mlflow &&
+             mlflow server --host 0.0.0.0 --port 5000
+               --backend-store-uri /mlruns
+               --default-artifact-root /mlruns"
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./mlruns:/mlruns
+
+  # ── Elasticsearch ──────────────────────────────────────────────────────────
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.13.0
+    container_name: fraud-es
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+    ports:
+      - "9200:9200"
+    volumes:
+      - es_data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9200"]
+      interval: 15s
+      retries: 5
+
+  # ── Kibana ─────────────────────────────────────────────────────────────────
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.13.0
+    container_name: fraud-kibana
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+    ports:
+      - "5601:5601"
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+
+  # ── FastAPI ────────────────────────────────────────────────────────────────
+  fraud-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: fraud-api
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./logs:/app/logs
+      - ./models:/app/models
+      - ./data:/app/data
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+
+  # ── Airflow ────────────────────────────────────────────────────────────────
+  airflow:
+    build:
+      context: .
+      dockerfile: Dockerfile.airflow
+    container_name: fraud-airflow
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    environment:
+      - AIRFLOW__CORE__EXECUTOR=SequentialExecutor
+      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=sqlite:////opt/airflow/airflow.db
+      - AIRFLOW__CORE__LOAD_EXAMPLES=false
+      - AIRFLOW__WEBSERVER__WEB_SERVER_WORKER_TIMEOUT=300
+      - AIRFLOW__WEBSERVER__WORKERS=1
+      - ES_HOST=elasticsearch
+      - MLFLOW_TRACKING_URI=http://mlflow:5000
+      - _AIRFLOW_WWW_USER_CREATE=true
+      - _AIRFLOW_WWW_USER_USERNAME=${AIRFLOW_USER}
+      - _AIRFLOW_WWW_USER_PASSWORD=${AIRFLOW_PASSWORD}
+      - _AIRFLOW_WWW_USER_FIRSTNAME=Admin
+      - _AIRFLOW_WWW_USER_LASTNAME=User
+      - _AIRFLOW_WWW_USER_ROLE=Admin
+      - _AIRFLOW_WWW_USER_EMAIL=${AIRFLOW_EMAIL}
+      - AIRFLOW__API__AUTH_BACKENDS=airflow.api.auth.backend.basic_auth
+    ports:
+      - "8081:8080"
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - ./src:/opt/airflow/src
+      - ./data:/opt/airflow/data
+      - ./logs:/opt/airflow/logs_app
+      - ./configs:/opt/airflow/configs      
+      - ./models:/opt/airflow/models
+      - ./docs:/opt/airflow/docs
+    command: >-
+      bash -c "
+        airflow db migrate &&
+        airflow users create --username "${AIRFLOW_USER}" --password "${AIRFLOW_PASSWORD}" --firstname Admin --lastname User --role Admin --email "${AIRFLOW_EMAIL}" 2>&1 | grep -v 'already exist'; true &&
+        airflow webserver & airflow scheduler"
+    depends_on:
+      - fraud-api
+      - mlflow
+
+  # ── Streamlit ──────────────────────────────────────────────────────────────
+  streamlit:
+    build:
+      context: .
+      dockerfile: Dockerfile.streamlit
+    container_name: fraud-streamlit
+    environment:
+      - API_URL=http://fraud-api:8000
+      - MLFLOW_URI=http://mlflow:5000
+      - AIRFLOW_URL=http://airflow:8080
+      - AIRFLOW_USER=${AIRFLOW_USER}
+      - AIRFLOW_PASSWORD=${AIRFLOW_PASSWORD}
+      - LOG_PATH=/app/logs/predictions.jsonl
+      - IMAGES_DIR=/app/docs/images
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./logs:/app/logs
+      - ./docs:/app/docs
+      - ./streamlit_app.py:/app/streamlit_app.py
+    depends_on:
+      - fraud-api
+      - mlflow
+      - airflow
+
+volumes:
+  es_data:
+  airflow_data:
