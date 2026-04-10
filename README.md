@@ -138,7 +138,7 @@ mlflow:
 
 ## Progression détaillée
 
-### ✅ Jour 1 — Setup et arborescence
+### Setup et arborescence
 
 - Création de l'arborescence complète du projet
 - Configuration de `configs/config.yml`
@@ -147,7 +147,7 @@ mlflow:
 
 ---
 
-### ✅ Jour 2 — EDA (Analyse Exploratoire des Données)
+### EDA (Analyse Exploratoire des Données)
 
 **Fichier** : `notebooks/notebook_eda.ipynb`
 
@@ -205,7 +205,7 @@ data/processed/emails_clean.csv — 10 247 emails propres
 
 ---
 
-### ✅ Jour 3 — Preprocessing NLP
+### Preprocessing NLP
 
 **Fichier** : `src/features/preprocess.py`
 
@@ -253,7 +253,7 @@ Test                   : 2 021
 
 ---
 
-### ✅ Jour 4 — Modèle Baseline : TF-IDF + SMOTE + Logistic Regression
+### Modèle Baseline : TF-IDF + SMOTE + Logistic Regression
 
 **Fichier** : `src/models/train_tfidf.py`
 
@@ -325,7 +325,7 @@ models/tfidf_vectorizer.joblib   ← vectorizer TF-IDF (nécessaire pour l'infé
 
 ---
 
-### ✅ Jour 4 (suite) — DistilBERT Fine-tuning
+### (suite) — DistilBERT Fine-tuning
 
 **Fichier** : `src/models/train_bert.py`
 
@@ -443,7 +443,7 @@ mlflow ui --port 5000
 
 ---
 
-### ✅ Jour 5 — FastAPI `/predict`
+### FastAPI `/predict`
 
 **Fichier** : `src/api/main.py`
 
@@ -521,7 +521,7 @@ Swagger UI : `http://localhost:8000/docs`
 
 ---
 
-### ✅ Jour 6 (partie 1) — MLflow Experiment Tracking
+### (partie 1) — MLflow Experiment Tracking
 
 **Fichier** : `src/monitoring/mlflow_logger.py`
 
@@ -578,7 +578,7 @@ UI : `http://localhost:5000`
 
 ---
 
-### ✅ Jour 6 (suite) — Elasticsearch + Kibana
+### (suite) — Elasticsearch + Kibana
 
 **Fichiers** : `docker-compose.yml`, `src/monitoring/es_logger.py`
 
