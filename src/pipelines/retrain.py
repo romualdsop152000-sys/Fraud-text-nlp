@@ -220,6 +220,7 @@ def retrain_bert(epochs: int = None, batch_size: int = None, max_length: int = N
     max_length = max_length or bert_cfg.get("max_length", 128)
     use_fp16   = bert_cfg.get("fp16", True)
     use_grad_ckpt = bert_cfg.get("gradient_checkpointing", True)
+    lr         = float(bert_cfg.get("retrain_lr", 5e-6))
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     use_fp16 = use_fp16 and device.type == "cuda"  # fp16 inutile sur CPU
@@ -261,7 +262,7 @@ def retrain_bert(epochs: int = None, batch_size: int = None, max_length: int = N
         model.gradient_checkpointing_enable()  # économise ~30% VRAM
     model.to(device)
 
-    optimizer   = AdamW(model.parameters(), lr=5e-6)  # 2e-5 causait divergence à epoch 2
+    optimizer   = AdamW(model.parameters(), lr=lr)  # bert.retrain_lr dans config.yml
     total_steps = len(train_loader) * epochs
     scheduler   = get_linear_schedule_with_warmup(
         optimizer, num_warmup_steps=int(0.1 * total_steps),

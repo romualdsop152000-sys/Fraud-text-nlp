@@ -1,7 +1,9 @@
+# torch doit être importé AVANT pandas/sklearn : sous Windows, charger optree
+# (importé par torch à l'optimizer.step) après pandas provoque un segfault.
+import torch
 import yaml as yml
 import pandas as pd
 import os
-import torch
 from torch.utils.data import Dataset, DataLoader
 from transformers import (
     DistilBertTokenizerFast,
@@ -40,11 +42,23 @@ class EmailDataset(Dataset):
         }
 
 
-def train_bert(config_path: str = "configs/config.yml", epochs: int = 3, batch_size: int = 16):
-    config = load_config(config_path)
+def train_bert(config_path: str = "configs/config.yml", epochs: int = None,
+               batch_size: int = None, max_length: int = None):
+    config   = load_config(config_path)
+    bert_cfg = config.get("bert", {})
+
+    # Paramètres : argument explicite > config.yml > valeur par défaut
+    epochs        = epochs     or bert_cfg.get("epochs",     3)
+    batch_size    = batch_size or bert_cfg.get("batch_size", 16)
+    max_length    = max_length or bert_cfg.get("max_length", 128)
+    use_fp16      = bert_cfg.get("fp16", True)
+    use_grad_ckpt = bert_cfg.get("gradient_checkpointing", True)
+    lr            = float(bert_cfg.get("lr", 2e-5))
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Device : {device}")
+    use_fp16 = use_fp16 and device.type == "cuda"  # fp16 inutile sur CPU
+    print(f"Device : {device} | epochs: {epochs} | batch_size: {batch_size} | "
+          f"max_length: {max_length} | lr: {lr} | fp16: {use_fp16} | grad_ckpt: {use_grad_ckpt}")
 
     # Chargement des données
     train_df = pd.read_csv("data/processed/train.csv")
@@ -59,8 +73,8 @@ def train_bert(config_path: str = "configs/config.yml", epochs: int = 3, batch_s
     print("Tokenisation en cours...")
 
     tokenizer = DistilBertTokenizerFast.from_pretrained("distilbert-base-uncased")
-    train_dataset = EmailDataset(X_train, y_train, tokenizer)
-    test_dataset  = EmailDataset(X_test,  y_test,  tokenizer)
+    train_dataset = EmailDataset(X_train, y_train, tokenizer, max_length)
+    test_dataset  = EmailDataset(X_test,  y_test,  tokenizer, max_length)
 
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
     test_loader  = DataLoader(test_dataset,  batch_size=batch_size)
@@ -70,15 +84,18 @@ def train_bert(config_path: str = "configs/config.yml", epochs: int = 3, batch_s
     model = DistilBertForSequenceClassification.from_pretrained(
         "distilbert-base-uncased", num_labels=2
     )
+    if use_grad_ckpt:
+        model.gradient_checkpointing_enable()  # économise ~30% VRAM
     model.to(device)
 
-    optimizer = AdamW(model.parameters(), lr=2e-5)
+    optimizer = AdamW(model.parameters(), lr=lr)
     total_steps = len(train_loader) * epochs
     scheduler = get_linear_schedule_with_warmup(
         optimizer,
         num_warmup_steps=int(0.1 * total_steps),
         num_training_steps=total_steps
     )
+    scaler = torch.cuda.amp.GradScaler(enabled=use_fp16)  # compatible torch>=2.2
 
     # Entraînement avec logs par batch
     for epoch in range(epochs):
@@ -92,13 +109,16 @@ def train_bert(config_path: str = "configs/config.yml", epochs: int = 3, batch_s
             attention_mask = batch["attention_mask"].to(device)
             labels         = batch["labels"].to(device)
 
-            outputs = model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
+            with torch.autocast(device_type=device.type, enabled=use_fp16):
+                outputs = model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
             loss = outputs.loss
             total_loss += loss.item()
 
-            loss.backward()
+            scaler.scale(loss).backward()
+            scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            optimizer.step()
+            scaler.step(optimizer)
+            scaler.update()
             scheduler.step()
 
             # Log tous les 50 batches

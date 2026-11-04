@@ -7,6 +7,7 @@ from typing import Literal
 
 import torch
 import joblib
+import yaml
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, field_validator
 from transformers import DistilBertTokenizerFast, DistilBertForSequenceClassification
@@ -41,7 +42,11 @@ async def lifespan(app: FastAPI):
     models["tfidf_logreg"]     = joblib.load("models/tfidf_logreg.joblib")
     logger.info("TF-IDF chargé")
 
-    # DistilBERT
+    # DistilBERT — max_length lu dans la config (identique à l'entraînement)
+    with open("configs/config.yml", "r") as f:
+        bert_cfg = (yaml.safe_load(f) or {}).get("bert", {})
+    models["bert_max_length"] = bert_cfg.get("max_length", 128)
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     models["bert_device"]    = device
     models["bert_tokenizer"] = DistilBertTokenizerFast.from_pretrained("models/bert")
@@ -108,7 +113,7 @@ def predict_bert(text: str) -> tuple[int, float]:
         return_tensors="pt",
         truncation=True,
         padding=True,
-        max_length=256,
+        max_length=models["bert_max_length"],
     )
     inputs = {k: v.to(device) for k, v in inputs.items()}
 
