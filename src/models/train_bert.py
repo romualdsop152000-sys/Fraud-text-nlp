@@ -1,5 +1,7 @@
-# torch doit être importé AVANT pandas/sklearn : sous Windows, charger optree
-# (importé par torch à l'optimizer.step) après pandas provoque un segfault.
+# torch importé AVANT pandas/sklearn : sous Windows avec optree 0.19.0, charger
+# optree (importé par torch à l'optimizer.step) après pandas provoque un segfault.
+# Corrigé par optree>=0.20.0 ; cet ordre n'aide que si le script est lancé
+# directement (python src/models/train_bert.py), pas via src/models/__init__.py.
 import torch
 import yaml as yml
 import pandas as pd

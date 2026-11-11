@@ -30,6 +30,7 @@ PREDICTIONS_LOG = "logs/predictions.jsonl"
 
 # ── Chargement des modèles au démarrage ────────────────────────────────────────
 models: dict = {}
+settings: dict = {}  # paramètres d'inférence (hors models → pas listés dans /health)
 
 
 @asynccontextmanager
@@ -45,7 +46,7 @@ async def lifespan(app: FastAPI):
     # DistilBERT — max_length lu dans la config (identique à l'entraînement)
     with open("configs/config.yml", "r") as f:
         bert_cfg = (yaml.safe_load(f) or {}).get("bert", {})
-    models["bert_max_length"] = bert_cfg.get("max_length", 128)
+    settings["bert_max_length"] = bert_cfg.get("max_length", 128)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     models["bert_device"]    = device
@@ -113,7 +114,7 @@ def predict_bert(text: str) -> tuple[int, float]:
         return_tensors="pt",
         truncation=True,
         padding=True,
-        max_length=models["bert_max_length"],
+        max_length=settings["bert_max_length"],
     )
     inputs = {k: v.to(device) for k, v in inputs.items()}
 

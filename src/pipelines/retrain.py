@@ -152,7 +152,7 @@ def retrain_tfidf() -> tuple:
 
     vec = TfidfVectorizer(
         max_features=config["model"]["tfidf_max_features"],
-        ngram_range=(2, 3),
+        ngram_range=tuple(config["model"].get("tfidf_ngram_range", [1, 2])),
     )
     X_tr = vec.fit_transform(X_train)
     X_te = vec.transform(X_test)

@@ -1,3 +1,10 @@
+import os
+
+# Les poids DistilBERT (~270 Mo) mettent ~4 min à s'uploader vers le serveur MLflow
+# (écriture lente sur ./mlruns monté depuis Windows). Avec le timeout par défaut
+# (120 s), chaque tentative expirait → run FAILED après 7 essais (~16 min).
+os.environ.setdefault("MLFLOW_HTTP_REQUEST_TIMEOUT", "900")
+
 import yaml as yml
 import joblib
 import pandas as pd
@@ -44,7 +51,7 @@ def log_tfidf(config_path: str = "configs/config.yml"):
         mlflow.log_param("model_type", "TF-IDF + LogisticRegression" +"SMOTE")
         mlflow.log_param("tfidf_max_features", config["model"]["tfidf_max_features"])
         mlflow.log_param("smote_k_neighbors", config["model"]["smote_k_neighbors"])
-        mlflow.log_param("ngram_range", (2, 3))
+        mlflow.log_param("ngram_range", vectorizer.ngram_range)  # valeur réelle du modèle chargé
         mlflow.log_param("C", 1.0)
         mlflow.log_param("random_state", config["model"]["random_state"])
         

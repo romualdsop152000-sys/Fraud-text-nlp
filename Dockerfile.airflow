@@ -4,12 +4,17 @@ USER root
 RUN apt-get update && apt-get install -y --no-install-recommends gcc && rm -rf /var/lib/apt/lists/*
 
 USER airflow
+# scikit-learn épinglé : même version que l'image de l'API qui charge les .joblib
 RUN pip install --no-cache-dir \
     requests pandas elasticsearch joblib \
-    scikit-learn imbalanced-learn mlflow pyyaml nltk matplotlib
+    "scikit-learn==1.8.0" imbalanced-learn mlflow pyyaml nltk matplotlib
 
 # PyTorch GPU (cu124 = CUDA 12.4 — RTX 4050 Laptop)
 RUN pip install --no-cache-dir \
     torch --index-url https://download.pytorch.org/whl/cu124
 
 RUN pip install --no-cache-dir transformers
+
+# Client MLflow aligné sur le serveur (compose.yml : mlflow==3.10.1).
+# Couche séparée pour ne pas invalider le cache de la couche torch (~2,5 Go).
+RUN pip install --no-cache-dir "mlflow==3.10.1"
