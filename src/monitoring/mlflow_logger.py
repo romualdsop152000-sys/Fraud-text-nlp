@@ -1,3 +1,10 @@
+import os
+
+# Les poids DistilBERT (~270 Mo) mettent ~4 min à s'uploader vers le serveur MLflow
+# (écriture lente sur ./mlruns monté depuis Windows). Avec le timeout par défaut
+# (120 s), chaque tentative expirait → run FAILED après 7 essais (~16 min).
+os.environ.setdefault("MLFLOW_HTTP_REQUEST_TIMEOUT", "900")
+
 import yaml as yml
 import joblib
 import pandas as pd
@@ -44,7 +51,7 @@ def log_tfidf(config_path: str = "configs/config.yml"):
         mlflow.log_param("model_type", "TF-IDF + LogisticRegression" +"SMOTE")
         mlflow.log_param("tfidf_max_features", config["model"]["tfidf_max_features"])
         mlflow.log_param("smote_k_neighbors", config["model"]["smote_k_neighbors"])
-        mlflow.log_param("ngram_range", (2, 3))
+        mlflow.log_param("ngram_range", vectorizer.ngram_range)  # valeur réelle du modèle chargé
         mlflow.log_param("C", 1.0)
         mlflow.log_param("random_state", config["model"]["random_state"])
         
@@ -59,10 +66,13 @@ def log_tfidf(config_path: str = "configs/config.yml"):
         
         print(f"TF-IDF logged to MLflow with F1={f1:.4f} | PR-AUC={prauc:.4f} | Acc={acc:.4f}")
         
-def log_bert(config_path: str = "configs/config.yml", batch_size: int = 16):
+def log_bert(config_path: str = "configs/config.yml", batch_size: int = None):
     """Logge le modèle DistiBERT dans MLflow"""
     config = load_config(config_path)
     mlflow.set_experiment(config["mlflow"]["experiment_name"])
+    bert_cfg   = config.get("bert", {})
+    batch_size = batch_size or bert_cfg.get("batch_size", 16)
+    max_length = bert_cfg.get("max_length", 128)
     
     test_df = pd.read_csv("data/processed/test.csv")
     X_test = test_df["text_bert"].fillna("")
@@ -74,7 +84,7 @@ def log_bert(config_path: str = "configs/config.yml", batch_size: int = 16):
     model.to(device)
     model.eval()
     
-    dataset = EmailDataset(X_test, y_test, tokenizer)
+    dataset = EmailDataset(X_test, y_test, tokenizer, max_length)
     loader = DataLoader(dataset, batch_size=batch_size)
     
     all_preds, all_proba = [], []
@@ -96,10 +106,12 @@ def log_bert(config_path: str = "configs/config.yml", batch_size: int = 16):
         # Paramètres
         mlflow.log_param("model_type", "DistilBERT fine-tuned")
         mlflow.log_param("base_model", "distilbert-base-uncased")
-        mlflow.log_param("epochs", 3)
+        mlflow.log_param("epochs", bert_cfg.get("epochs", 3))
         mlflow.log_param("batch_size", batch_size)
-        mlflow.log_param("max_length", 256)
-        mlflow.log_param("lr", 2e-5)
+        mlflow.log_param("max_length", max_length)
+        mlflow.log_param("fp16", bert_cfg.get("fp16", True))
+        mlflow.log_param("gradient_checkpointing", bert_cfg.get("gradient_checkpointing", True))
+        mlflow.log_param("lr", float(bert_cfg.get("lr", 2e-5)))
         mlflow.log_param("warmup", "10%")
         
         # Métriques

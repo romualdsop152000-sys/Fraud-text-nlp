@@ -2,7 +2,7 @@
 Script de retraining automatique — TF-IDF + BERT conditionnel.
 Logique :
   1. Réentraîne TF-IDF (rapide)
-  2. Si F1_tfidf < 0.95 → réentraîne BERT sur GPU
+  2. Si F1_tfidf < 0.92 → réentraîne BERT sur GPU
   3. Promeut le meilleur modèle
   4. Log dans MLflow
 """
@@ -35,7 +35,7 @@ VEC_PATH           = os.path.join(BASE_DIR, "models/tfidf_vectorizer.joblib")
 BERT_PATH          = os.path.join(BASE_DIR, "models/bert")
 CONFIG_PATH        = os.path.join(BASE_DIR, "configs/config.yml")
 F1_MIN_IMPROVEMENT = 0.001
-F1_BERT_THRESHOLD  = 0.95  # déclenche le retraining BERT si TF-IDF < ce seuil
+F1_BERT_THRESHOLD  = 0.92  # déclenche le retraining BERT si TF-IDF < ce seuil
 # Dossier plots : priorité au chemin monté dans le conteneur Airflow,
 # sinon fallback sur docs/images/ local
 PLOTS_DIR = (
@@ -152,7 +152,7 @@ def retrain_tfidf() -> tuple:
 
     vec = TfidfVectorizer(
         max_features=config["model"]["tfidf_max_features"],
-        ngram_range=(2, 3),
+        ngram_range=tuple(config["model"].get("tfidf_ngram_range", [1, 2])),
     )
     X_tr = vec.fit_transform(X_train)
     X_te = vec.transform(X_test)
@@ -220,6 +220,7 @@ def retrain_bert(epochs: int = None, batch_size: int = None, max_length: int = N
     max_length = max_length or bert_cfg.get("max_length", 128)
     use_fp16   = bert_cfg.get("fp16", True)
     use_grad_ckpt = bert_cfg.get("gradient_checkpointing", True)
+    lr         = float(bert_cfg.get("retrain_lr", 5e-6))
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     use_fp16 = use_fp16 and device.type == "cuda"  # fp16 inutile sur CPU
@@ -261,7 +262,7 @@ def retrain_bert(epochs: int = None, batch_size: int = None, max_length: int = N
         model.gradient_checkpointing_enable()  # économise ~30% VRAM
     model.to(device)
 
-    optimizer   = AdamW(model.parameters(), lr=5e-6)  # 2e-5 causait divergence à epoch 2
+    optimizer   = AdamW(model.parameters(), lr=lr)  # bert.retrain_lr dans config.yml
     total_steps = len(train_loader) * epochs
     scheduler   = get_linear_schedule_with_warmup(
         optimizer, num_warmup_steps=int(0.1 * total_steps),

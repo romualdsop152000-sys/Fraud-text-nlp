@@ -9,10 +9,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt .
 
 # Toutes les dépendances sauf torch
+# scikit-learn épinglé : même version que l'image Airflow qui (ré)entraîne
+# TF-IDF, sinon le vectorizer .joblib ne se recharge pas ("idf vector is not fitted")
 RUN pip install --no-cache-dir \
     pandas \
     numpy \
-    scikit-learn \
+    "scikit-learn==1.8.0" \
+    pyyaml \
     nltk \
     transformers \
     joblib \

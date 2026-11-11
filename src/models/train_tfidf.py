@@ -29,7 +29,7 @@ def train_tfidf(config_path: str = "configs/config.yml"):
     # Vectorisation TF-IDF
     vectorizer = TfidfVectorizer(
         max_features=config["model"]["tfidf_max_features"],
-        ngram_range=(2, 3)  # bigrammes et trigrammes
+        ngram_range=tuple(config["model"].get("tfidf_ngram_range", [1, 2])),
     )
     X_train_tfidf = vectorizer.fit_transform(X_train)
     X_test_tfidf = vectorizer.transform(X_test)

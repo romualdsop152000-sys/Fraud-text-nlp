@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import time
@@ -62,10 +63,14 @@ def ingest_logs(log_path: str = PREDICTIONS_LOG) -> int:
             print("Aucune prédiction à ingerer.")
             return 0
         
-        # Bulk indexer les documents
+        # Bulk indexer les documents.
+        # _id déterministe (hash SHA-1 de la ligne) : le fichier JSONL est relu
+        # en entier à chaque run Airflow, une prédiction déjà indexée est donc
+        # écrasée à l'identique au lieu d'être dupliquée (ingestion idempotente).
         actions = [
             {
                 "_index": INDEX_NAME,
+                "_id": hashlib.sha1(line.encode("utf-8")).hexdigest(),
                 "_source": json.loads(line),
             }
             for line in lines

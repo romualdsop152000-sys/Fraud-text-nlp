@@ -6,12 +6,13 @@ Détection automatique d'emails frauduleux (phishing, scams) via un pipeline NLP
 
 | Couche | Technologie |
 |---|---|
-| NLP | Python, scikit-learn, transformers (BERT) |
+| NLP / Modèles | Python, scikit-learn, PyTorch, Hugging Face Transformers (DistilBERT) |
 | Orchestration | Airflow (Docker) |
 | Serving | FastAPI |
 | Logging | Elasticsearch + Kibana |
 | Experiment tracking | MLflow |
-| Containerisation | Docker, docker-compose |
+| Containerisation | Docker, Docker Compose (support GPU NVIDIA) |
+| Démo | Streamlit |
 | Data | pandas, numpy |
 
 ---
@@ -32,6 +33,9 @@ Détection automatique d'emails frauduleux (phishing, scams) via un pipeline NLP
 fraud-text-nlp/
 ├── configs/
 │   └── config.yml                  # Paramètres centralisés
+├── dags/
+│   ├── fraude_pipeline.py          # DAG Airflow : health_check → batch_predict → ingest_to_es
+│   └── fraud_retrain.py            # DAG Airflow : retraining hebdomadaire + branchement BERT
 ├── data/
 │   ├── raw/
 │   │   └── fraud_emails.csv        # Dataset brut Kaggle
@@ -39,6 +43,7 @@ fraud-text-nlp/
 │       ├── emails_clean.csv        # Nettoyé structurellement (EDA)
 │       ├── train.csv               # Train set 80% (textes TF-IDF + BERT)
 │       └── test.csv                # Test set 20%
+├── docs/images/                    # Captures (Kibana, Airflow, courbes PR, matrices)
 ├── models/
 │   ├── tfidf_logreg.joblib         # Modèle Logistic Regression entraîné
 │   ├── tfidf_vectorizer.joblib     # Vectorizer TF-IDF sauvegardé
@@ -47,26 +52,27 @@ fraud-text-nlp/
 │   └── notebook_eda.ipynb          # Analyse exploratoire complète
 ├── src/
 │   ├── features/
-│   │   ├── __init__.py
 │   │   └── preprocess.py           # Nettoyage NLP + split train/test
 │   ├── models/
-│   │   ├── __init__.py
 │   │   ├── train_tfidf.py          # TF-IDF + SMOTE + Logistic Regression
 │   │   └── train_bert.py           # DistilBERT fine-tuning
 │   ├── api/
-│   │   ├── __init__.py
 │   │   └── main.py                 # FastAPI app — /health + /predict
 │   ├── monitoring/
-│   │   ├── __init__.py
-│   │   └── mlflow_logger.py        # Logging MLflow (TF-IDF + BERT)
-│   └── pipelines/                  # (Jour 7) Airflow DAGs
+│   │   ├── mlflow_logger.py        # Logging MLflow (TF-IDF + BERT)
+│   │   └── es_logger.py            # Indexation des prédictions dans Elasticsearch
+│   └── pipelines/
+│       ├── batch_predict.py        # Prédictions en batch via l'API
+│       └── retrain.py              # Retraining + promotion + logging MLflow
+├── streamlit_app.py                # Interface de démonstration
 ├── logs/
 ├── mlruns/
-├── tests/
-├── .env                            # Credentials locaux (non versionné)
+├── .env.example                    # Modèle de credentials (copier en .env, non versionné)
 ├── requirements.txt
-├── Dockerfile
-└── docker-compose.yml
+├── Dockerfile                      # Image FastAPI
+├── Dockerfile.airflow              # Image Airflow (+ PyTorch / GPU)
+├── Dockerfile.streamlit            # Image Streamlit
+└── compose.yml                     # Stack complète
 ```
 
 ---
@@ -82,7 +88,7 @@ fraud-text-nlp/
 
 ```bash
 # Cloner le projet
-git clone https://github.com/TON_USER/fraud-text-nlp.git
+git clone https://github.com/romualdsop152000-sys/fraud-text-nlp.git
 cd fraud-text-nlp
 
 # Configurer les credentials
@@ -126,13 +132,27 @@ data:
 
 model:
   tfidf_max_features: 10000   # Taille vocabulaire TF-IDF
+  tfidf_ngram_range: [1, 2]   # Mots seuls + bigrammes (train_tfidf.py et retrain.py)
   smote_k_neighbors: 5        # Voisins SMOTE pour génération synthétique
   random_state: 42            # Reproductibilité
   test_size: 0.2              # 20% pour le test
 
 mlflow:
   experiment_name: fraud-detection
+
+bert:
+  epochs: 3                     # ne pas augmenter tant que la loss diverge
+  batch_size: 16
+  max_length: 128               # utilisé à l'entraînement ET par l'API (même troncature)
+  fp16: true                    # mixed precision (GPU uniquement) → VRAM divisée par ~2
+  gradient_checkpointing: true  # ~30% de VRAM économisée
+  lr: 2.0e-5                    # fine-tuning initial depuis distilbert-base-uncased (train_bert.py)
+  retrain_lr: 5.0e-6            # réentraînement depuis models/bert (retrain.py)
 ```
+
+La section `bert:` est la **source unique** des hyperparamètres DistilBERT : elle est lue par `train_bert.py`, `retrain.py`, l'API (`max_length`) et `mlflow_logger.py` (params loggés). Un argument passé explicitement à `train_bert()` / `retrain_bert()` reste prioritaire.
+
+> Les learning rates s'écrivent `2.0e-5` (avec le point) : PyYAML lit `2e-5` comme une chaîne de caractères, pas comme un nombre.
 
 ---
 
@@ -179,7 +199,7 @@ df = pd.read_csv(os.path.join(path, csv_file[0]))
 Classe 0 (Non-Fraude) : ~57%
 Classe 1 (Fraude)     : ~43%
 ```
-- Déséquilibre confirmé → justifie l'utilisation de SMOTE lors de l'entraînement
+- Déséquilibre **modéré** (57/43) → rééquilibrage par SMOTE sur le train uniquement ; `class_weight="balanced"` reste une alternative plus simple à comparer (voir *Limites*)
 
 **6. Analyse des longueurs**
 - Les emails frauduleux sont en moyenne **plus longs** que les emails légitimes
@@ -200,7 +220,7 @@ data/processed/emails_clean.csv — 10 247 emails propres
 |---|---|
 | Conserver textes courts | Label valide = donnée exploitable |
 | Dédupliquer avant split | Éviter data leakage train/test |
-| SMOTE plutôt que class_weight | Meilleure généralisation sur données déséquilibrées |
+| SMOTE sur le train uniquement | Rééquilibrer les classes sans altérer le test set |
 | TF-IDF comme baseline | Vocabulaire frauduleux clairement identifié |
 
 ---
@@ -271,13 +291,23 @@ train.csv
 ```python
 TfidfVectorizer(
     max_features=10000,   # Top 10 000 tokens du vocabulaire
-    ngram_range=(2, 3),   # Bigrammes + trigrammes
-    sublinear_tf=True     # log(tf) pour réduire l'impact des mots très fréquents
+    ngram_range=(1, 2),   # Mots seuls + bigrammes (config.yml : model.tfidf_ngram_range)
 )
 ```
 
-#### Pourquoi `ngram_range=(2,3)` sans unigrammes ?
-Un choix contre-intuitif : on exclut les mots seuls. "bank", "transfer", "money" apparaissent dans les deux classes (légitimes et fraudes), ils ne sont pas discriminants seuls. Ce sont les expressions "transfer money", "bank account", "wire transfer", "dear beneficiary" qui caractérisent les emails frauduleux. Les bigrammes et trigrammes capturent ces formulations typiques là où les unigrammes généreraient du bruit.
+#### Pourquoi `ngram_range=(1, 2)` ?
+La première version utilisait `(2, 3)` (bigrammes + trigrammes, sans mots seuls), avec l'idée que des mots comme « bank » ou « money » ne sont pas discriminants isolément. En pratique, avec seulement 10 000 features, **37 % des emails de test (743 / 2 021) ne contenaient aucun bigramme ou trigramme connu** : leur vecteur était vide et le modèle renvoyait toujours la même probabilité (0.226 → « Non-Fraude »), quel que soit le texte.
+
+Comparaison sur le même split (SMOTE + Logistic Regression identiques) :
+
+| ngram_range | F1 fraude | PR-AUC | Recall fraude | Emails sans feature |
+|---|---|---|---|---|
+| (2, 3) — ancienne version | 0.9414 | 0.9684 | 0.892 | 743 |
+| (1, 1) | 0.9710 | 0.9979 | 0.949 | 34 |
+| **(1, 2) — retenu** | **0.9716** | **0.9976** | **0.951** | **43** |
+| (1, 3) | 0.9716 | 0.9972 | 0.951 | 46 |
+
+`(1, 2)` garde les mots discriminants (« urgent », « beneficiary ») **et** les expressions courtes (« bank account », « wire transfer »).
 
 #### SMOTE — équilibrage
 ```
@@ -293,26 +323,28 @@ SMOTE interpole entre voisins dans un espace vectoriel numérique. Il doit être
 
 #### Résultats obtenus
 
+Run du 11/11/2026 (`ngram_range=(1, 2)`, scikit-learn 1.8.0) :
+
 ```
               precision    recall  f1-score   support
-  Non-Fraude       0.92      1.00      0.96      1157
-      Fraude       1.00      0.89      0.94       864
+  Non-Fraude       0.96      0.99      0.98      1157
+      Fraude       0.99      0.95      0.97       864
 
-    accuracy                           0.95      2021
+    accuracy                           0.98      2021
 
-F1 (fraude)  : 0.9407
-PR-AUC       : 0.9683
+F1 (fraude)  : 0.9716
+PR-AUC       : 0.9976
 ```
 
 #### Analyse des métriques
 | Métrique | Valeur | Interprétation |
 |---|---|---|
-| Precision Fraude | 1.00 | Zéro faux positif — chaque alerte est réelle |
-| Recall Fraude | 0.89 | 11% des fraudes manquées (faux négatifs) |
-| F1 Fraude | 0.94 | Excellent équilibre precision/recall |
-| PR-AUC | 0.97 | Très bonne discrimination sur toute la courbe |
+| Precision Fraude | 0.99 (0.993) | 6 faux positifs sur 1 157 emails légitimes — quasiment chaque alerte est réelle |
+| Recall Fraude | 0.95 | 42 fraudes manquées sur 864 (contre 94 avec l'ancienne version `(2, 3)`) |
+| F1 Fraude | 0.97 | Excellent équilibre precision/recall |
+| PR-AUC | 0.998 | Très bonne discrimination sur toute la courbe |
 
-**Point d'amélioration** : le recall fraude (0.89) pourrait être amélioré avec BERT ou en ajustant le seuil de décision.
+**Point d'amélioration** : le recall fraude (0.95) pourrait encore être amélioré avec BERT ou en ajustant le seuil de décision.
 
 #### Pourquoi PR-AUC plutôt que ROC-AUC ?
 Sur un dataset déséquilibré, la ROC-AUC est trop optimiste : elle intègre les vrais négatifs (emails légitimes bien classés), qui sont nombreux et gonflent artificiellement le score. La **PR-AUC** (Precision-Recall AUC) mesure uniquement la qualité sur la classe positive (fraude) à tous les seuils de décision — c'est la métrique pertinente quand le coût d'un faux négatif (fraude manquée) est élevé.
@@ -325,29 +357,34 @@ models/tfidf_vectorizer.joblib   ← vectorizer TF-IDF (nécessaire pour l'infé
 
 ---
 
-### (suite) — DistilBERT Fine-tuning
+### DistilBERT Fine-tuning
 
 **Fichier** : `src/models/train_bert.py`
 
 #### Pipeline d'entraînement
 ```
 train.csv
-  → tokenisation DistilBertTokenizerFast (max_length=256)
+  → tokenisation DistilBertTokenizerFast (max_length=128, config.yml)
   → EmailDataset (PyTorch Dataset)
   → DataLoader (batch_size=16, shuffle=True)
-  → DistilBertForSequenceClassification (2 labels)
-  → AdamW + LinearScheduleWithWarmup (warmup=10%)
+  → DistilBertForSequenceClassification (2 labels) + gradient checkpointing
+  → AdamW (lr=2e-5) + LinearScheduleWithWarmup (warmup=10%)
+  → fp16 (autocast + GradScaler) si GPU, gradient clipping 1.0
   → 3 epochs avec logs tous les 50 batches
   → Évaluation sur test.csv
   → Sauvegarde models/bert/
 ```
 
+Tous les hyperparamètres viennent de la section `bert:` de `configs/config.yml` (voir [Configuration](#configuration--configsconfigyml)).
+
 #### Choix techniques
 | Décision | Justification |
 |---|---|
 | DistilBERT vs BERT-base | 40% plus léger, 97% des performances, entraînement ~2x plus rapide |
-| max_length=256 | Compromis longueur email / RAM GPU |
-| batch_size=16 | Compatible GPU grand public (8+ Go VRAM) |
+| max_length=128 | Même F1 / PR-AUC qu'avec 256 (0.9960 / 0.9999) pour deux fois moins de calcul par prédiction ; identique à l'entraînement et dans l'API |
+| batch_size=16 | Compatible GPU grand public (6+ Go VRAM avec fp16) |
+| fp16 + gradient checkpointing | Divise la VRAM nécessaire (RTX 4050 Laptop, 6 Go) ; fp16 désactivé automatiquement sur CPU |
+| lr=2e-5 | Valeur standard pour un fine-tuning depuis le modèle de base ; le réentraînement utilise `retrain_lr=5e-6` |
 | Warmup 10% | Stabilise l'entraînement en évitant les grandes mises à jour initiales |
 | `clean_text_bert` minimal | BERT exploite le contexte complet — stopwords conservés |
 
@@ -362,7 +399,7 @@ train.csv
 DistilBERT conserve 97% des performances de BERT-base sur les tâches de classification (Sanh et al., 2019). Sur notre dataset, on obtient F1=0.9960 / PR-AUC=0.9999 — il n'y a pas de marge d'amélioration significative à aller chercher avec un modèle plus lourd.
 
 **Inférence en production**
-DistilBERT aura une latence plus faible au moment de servir les prédictions via FastAPI, ce qui est un avantage direct pour le Jour 5.
+DistilBERT aura une latence plus faible au moment de servir les prédictions via FastAPI, ce qui est un avantage direct pour le serving FastAPI.
 
 **Quand privilégier BERT-base ?**
 - Tâches nécessitant une compréhension fine du contexte (NER, QA, raisonnement)
@@ -377,17 +414,19 @@ Pendant le fine-tuning, les gradients peuvent exploser (valeurs très grandes) e
 
 #### Progression de la loss
 ```
-Epoch 1 — Loss: 0.1206
-Epoch 2 — Loss: 0.0092
-Epoch 3 — Loss: 0.0029
+Epoch 1 — Loss: 0.1277
+Epoch 2 — Loss: 0.0118
+Epoch 3 — Loss: 0.0028
 ```
 
 #### Résultats obtenus
 
+Run du 04/11/2026 (max_length=128, fp16, lr=2e-5) :
+
 ```
               precision    recall  f1-score   support
-  Non-Fraude       1.00      1.00      1.00      1157
-      Fraude       1.00      1.00      1.00       864
+  Non-Fraude       1.00      0.99      1.00      1157
+      Fraude       0.99      1.00      1.00       864
 
     accuracy                           1.00      2021
 
@@ -398,10 +437,10 @@ PR-AUC       : 0.9999
 #### Analyse des métriques
 | Métrique | TF-IDF (baseline) | DistilBERT | Gain |
 |---|---|---|---|
-| F1 Fraude | 0.9407 | 0.9960 | +5.9 pts |
-| PR-AUC | 0.9683 | 0.9999 | +3.3 pts |
-| Accuracy | 0.95 | 1.00 | +5 pts |
-| Recall Fraude | 0.89 | 1.00 | +11 pts |
+| F1 Fraude | 0.9716 | 0.9960 | +2.4 pts |
+| PR-AUC | 0.9976 | 0.9999 | +0.2 pt |
+| Accuracy | 0.98 | 1.00 | +2 pts |
+| Recall Fraude | 0.95 | 1.00 | +5 pts |
 
 BERT élimine quasiment tous les faux négatifs (fraudes manquées), ce qui est l'objectif prioritaire en détection de fraude.
 
@@ -426,7 +465,7 @@ python3 -m src.features.preprocess
 # Entraînement TF-IDF
 python3 -m src.models.train_tfidf
 
-# Entraînement BERT (GPU recommandé)
+# Entraînement BERT (GPU recommandé) — paramètres dans configs/config.yml (section bert:)
 python3 -m src.models.train_bert
 
 # Lancer l'API
@@ -438,6 +477,14 @@ python3 -m src.monitoring.mlflow_logger
 # Lancer l'interface MLflow
 mlflow ui --port 5000
 ```
+
+#### Dépannage (Windows, hors Docker)
+
+| Symptôme | Cause | Solution |
+|---|---|---|
+| `train_bert` s'arrête sans message juste avant le 1er batch (code de sortie 139, *access violation*) | `optree` 0.19.0 plante s'il est chargé après pandas/scikit-learn ; torch l'importe au premier `optimizer.step()` | `pip install -U "optree>=0.20.0"` (ne pas le désinstaller : keras en dépend) |
+| `/predict` avec `model: "tfidf"` → `idf vector is not fitted` | `tfidf_vectorizer.joblib` enregistré avec une autre version de scikit-learn que celle installée (`InconsistentVersionWarning` au démarrage) | `pip install "scikit-learn==1.8.0"` — version épinglée dans `requirements.txt` et les deux Dockerfiles (API + Airflow) pour que l'entraînement et le chargement utilisent la même |
+| `pip` signale `imbalanced-learn requires scipy>=1.11.4` | scipy trop ancien | `pip install -U "scipy>=1.11.4"` |
 
 ---
 
@@ -493,7 +540,7 @@ POST /predict
 | `models: dict` global | Partagé entre toutes les requêtes sans rechargement |
 | `Literal["tfidf", "bert"]` | Validation automatique par Pydantic — rejette toute valeur invalide |
 | `@field_validator("text")` | Bloque les requêtes avec texte vide avant même d'atteindre l'inférence |
-| `logs/predictions.jsonl` | Une ligne JSON par prédiction — format idéal pour Elasticsearch (Jour 6) |
+| `logs/predictions.jsonl` | Une ligne JSON par prédiction — format idéal pour l'ingestion Elasticsearch |
 
 #### Pourquoi `lifespan` plutôt que des variables globales chargées à l'import ?
 Avec des variables initialisées à l'import, les modèles se chargent même lors des tests unitaires ou du rechargement `--reload`. Le `lifespan` garantit que le chargement n'a lieu **qu'au démarrage réel du serveur**, et que la libération mémoire est propre à l'arrêt.
@@ -521,7 +568,7 @@ Swagger UI : `http://localhost:8000/docs`
 
 ---
 
-### (partie 1) — MLflow Experiment Tracking
+### MLflow Experiment Tracking
 
 **Fichier** : `src/monitoring/mlflow_logger.py`
 
@@ -532,7 +579,7 @@ MLflow est un outil de **suivi d'expériences ML** : il enregistre les paramètr
 
 | Élément | TF-IDF | DistilBERT |
 |---|---|---|
-| **Params** | max_features, ngram_range, C, smote_k, random_state | base_model, epochs, batch_size, max_length, lr, warmup |
+| **Params** | max_features, ngram_range, C, smote_k, random_state | base_model, epochs, batch_size, max_length, lr, fp16, gradient_checkpointing, warmup (lus dans `config.yml`) |
 | **Métriques** | f1_fraude, pr_auc, accuracy | f1_fraude, pr_auc, accuracy |
 | **Artifacts** | tfidf_logreg + tfidf_vectorizer (sklearn) | dossier `models/bert/` complet |
 
@@ -548,10 +595,10 @@ mlflow.start_run(run_name="...")           ← démarre un run nommé
 
 #### Résultats enregistrés
 
-| Run | f1_fraude | pr_auc | accuracy | Durée |
-|---|---|---|---|---|
-| TF-IDF + Logistic Regression | 0.9407 | 0.9683 | 0.952 | 1.5 min |
-| distilbert-finetune | 0.9960 | 0.9999 | 1.000 | 5.8 s |
+| Run | f1_fraude | pr_auc | accuracy |
+|---|---|---|---|
+| TF-IDF + Logistic Regression | 0.9407 | 0.9683 | 0.952 |
+| distilbert-finetune | 0.9960 | 0.9999 | 1.000 |
 
 Interface disponible sur `http://localhost:5000` avec comparaison côte à côte des deux runs.
 
@@ -578,7 +625,7 @@ UI : `http://localhost:5000`
 
 ---
 
-### (suite) — Elasticsearch + Kibana
+### Elasticsearch + Kibana
 
 **Fichiers** : `docker-compose.yml`, `src/monitoring/es_logger.py`
 
@@ -619,7 +666,7 @@ services:
 | `prediction` | integer | 0 ou 1 |
 | `label` | keyword | `"Fraude"` ou `"Non-Fraude"` |
 | `probability` | float | Probabilité de fraude (classe 1) |
-| `text_preview` | text | Aperçu tronqué à 150 caractères |
+| `text_preview` | keyword | Aperçu tronqué à 150 caractères |
 
 #### Résultats
 
@@ -698,7 +745,7 @@ python3 -m src.monitoring.es_logger
 
 ---
 
-##  Jour 7 — Airflow DAG + Docker Compose full stack
+## Airflow DAG + Docker Compose full stack
 
 **Fichiers** : `dags/fraude_pipeline.py`, `src/pipelines/batch_predict.py`, `Dockerfile`, `compose.yml`
 
@@ -742,7 +789,7 @@ docker compose up -d
 
 ---
 
-##  Jour 8 — Pipeline de Retraining Automatique (Airflow + MLflow + GPU)
+## Pipeline de Retraining Automatique (Airflow + MLflow + GPU)
 
 **Fichiers** : `src/pipelines/retrain.py`, `dags/fraud_retrain.py`
 
@@ -770,7 +817,7 @@ dags/fraud_retrain.py  (hebdomadaire — dimanche 00:00 UTC)
 #### Logique de promotion
 
 ```python
-F1_BERT_THRESHOLD  = 0.95   # BERT déclenché si F1 TF-IDF < 0.95
+F1_BERT_THRESHOLD  = 0.92   # BERT déclenché si F1 TF-IDF < 0.92
 F1_MIN_IMPROVEMENT = 0.001  # TF-IDF promu uniquement si +0.1% vs prod
 ```
 
@@ -780,8 +827,8 @@ F1_MIN_IMPROVEMENT = 0.001  # TF-IDF promu uniquement si +0.1% vs prod
 4. Si `F1_tfidf < 0.92` → DistilBERT est réentraîné sur GPU (RTX 4050 Laptop)
 5. Tous les résultats sont loggés dans MLflow (expérience `fraud-detection-retrain`)
 
-#### Pourquoi un seuil à 0.95 pour BERT ?
-Le modèle TF-IDF a atteint F1=0.9407 en baseline. Si un réentraînement hebdomadaire descend en dessous de 0.95 (sur de nouvelles données), cela signale une dérive du concept (*concept drift*) que TF-IDF ne peut plus capturer seul. BERT, grâce à sa compréhension contextuelle, est alors mobilisé pour récupérer les performances.
+#### Pourquoi un seuil à 0.92 pour BERT ?
+Le seuil a été fixé quand le modèle TF-IDF atteignait F1=0.9407 en baseline (version `ngram_range=(2, 3)`) : il était placé ~2 points en dessous. Depuis le passage à `(1, 2)`, la baseline est de F1=0.9716, soit ~5 points au-dessus du seuil. Le principe : les fluctuations normales d'un réentraînement ne déclenchent pas un fine-tuning GPU coûteux, mais une chute sous 0.92 (sur de nouvelles données) signale une dérive du concept (*concept drift*) que TF-IDF ne peut plus capturer seul. BERT, grâce à sa compréhension contextuelle, est alors mobilisé pour récupérer les performances.
 
 #### Support GPU dans Docker
 
@@ -815,11 +862,13 @@ BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 
 ![DAG fraud_retrain — check_data → retrain_tfidf → branch_bert → skip_bert](docs/images/dashboard_fraude_retrain.png)
 
-*Ici : TF-IDF F1 ≥ 0.95 → BERT skippé (branche `skip_bert` success, `retrain_bert` skipped).*
+*Ici : TF-IDF F1 ≈ 0.94 ≥ 0.92 → BERT skippé (branche `skip_bert` success, `retrain_bert` skipped).*
 
 ---
 
 ## Résultats des modèles (dernier run de retraining)
+
+> Ces résultats proviennent du run Airflow du 25/03/2026, avec l'ancienne version TF-IDF `ngram_range=(2, 3)`. Avec `(1, 2)`, le TF-IDF atteint F1=0.9716 / PR-AUC=0.9976 (42 fraudes manquées, 6 faux positifs) — voir la section TF-IDF ci-dessus. Les captures seront à jour au prochain run du DAG.
 
 ### TF-IDF + Logistic Regression
 
@@ -847,7 +896,7 @@ BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 | F1 Fraude | 0.9977 |
 | PR-AUC | 0.9977 |
 | Epochs | 3 (optimum à epoch 1) |
-| Learning rate | 5e-6 |
+| Learning rate | 5e-6 (`bert.retrain_lr` dans `config.yml` — 2e-5 divergeait à l'epoch 2 en repartant du modèle déjà fine-tuné) |
 | Batch size | 16 |
 
 #### Loss & F1 par epoch
@@ -867,11 +916,11 @@ BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 | F1 Fraude | 0.9407 | **0.9977** | +5.7 pts |
 | PR-AUC | 0.9683 | **0.9977** | +2.9 pts |
 | Fraudes manquées | 94 | ~2 | -92 |
-| Vitesse inférence | < 1 ms | ~50 ms | — |
+| Vitesse inférence | < 1 ms | ~50 ms (GPU) | — |
 
 **Rôles complémentaires :**
 - **TF-IDF** : modèle de production (rapide, léger, F1 ≥ 0.92 nominal)
-- **DistilBERT** : filet de sécurité, réentraîné automatiquement si le TF-IDF dérive en dessous de 0.95
+- **DistilBERT** : filet de sécurité, réentraîné automatiquement si le TF-IDF dérive en dessous de 0.92
 
 ---
 
@@ -914,12 +963,24 @@ La chute brutale de précision après recall=0.90 indique que les 10% de fraudes
 
 | Scénario | Modèle actif | Justification |
 |---|---|---|
-| Production quotidienne | TF-IDF | Rapide, F1 > 0.94, 0 faux positif |
-| Drift détecté (F1 < 0.95) | BERT réentraîné | Récupère les fraudes atypiques nouvelles |
+| Production quotidienne | TF-IDF | Rapide, F1 = 0.97, 6 faux positifs / 1 157 |
+| Drift détecté (F1 < 0.92) | BERT réentraîné | Récupère les fraudes atypiques nouvelles |
 | Après retraining BERT | TF-IDF promu si meilleur | Le meilleur modèle passe en prod automatiquement |
 
 Cette architecture évite de servir BERT en temps réel (trop lent) tout en bénéficiant de sa précision lors des réentraînements hebdomadaires pour améliorer ou remplacer le TF-IDF en production.
 
 ---
 
-- Déploiement sur AWS (ECR + EC2)
+## Limites connues et pistes d'amélioration
+
+| Limite | Impact | Piste |
+|---|---|---|
+| Le retraining relit les mêmes `train.csv` / `test.csv` | Le drift ne peut pas encore se produire réellement ; le test set sert aussi à décider des promotions (risque de sur-ajustement au test) | Brancher un flux de nouveaux emails labellisés et garder un **holdout figé** réservé aux décisions de promotion |
+| **Biais du dataset** : la classe « légitime » provient presque entièrement des emails publiés d'Hillary Clinton, la classe « fraude » d'arnaques 419 | *Shortcut learning* : testé hors distribution, BERT classe en fraude (p=1.0) des emails professionnels banals (« la réunion est déplacée à 15h »). Le TF-IDF renvoyait une probabilité constante (0.226) quand aucun bigramme connu n'apparaissait — corrigé avec `ngram_range=(1, 2)` (43 emails de test sans feature au lieu de 743). Le F1 ≈ 0.998 ne vaut que **dans la distribution** du dataset | Évaluer sur un jeu hors distribution (Enron, SpamAssassin, phishing moderne et généré par LLM), entraîner sur des sources légitimes diversifiées, ajouter des tests de robustesse au pipeline de promotion |
+| SMOTE sur un déséquilibre modéré (57/43) dans un espace TF-IDF creux | Bénéfice non démontré | Comparer à `class_weight="balanced"` et à l'absence de rééquilibrage |
+| Seuil de décision fixé à 0.5 | Compromis precision/recall non optimisé | Choisir le seuil sur la courbe PR selon le coût métier FN vs FP |
+| BERT réentraîné mais pas servi en temps réel | Son gain de recall n'est pas exploité en continu | **Cascade** : TF-IDF pour tout le trafic, BERT seulement pour les cas incertains (0.3 < p < 0.7) |
+| Sécurité dev (ES sans auth, credentials Airflow par défaut) | Non adapté à la production | TLS + `xpack.security`, gestionnaire de secrets |
+| BERT : optimum atteint à l'epoch 1 | Calcul GPU inutile sur les epochs 2-3 | Passer à `epochs: 1` (gain énergétique) et mesurer l'empreinte avec CodeCarbon |
+| Déploiement local uniquement | — | Déploiement cloud (AWS ECR + EC2 ou GCP Cloud Run) |
+
