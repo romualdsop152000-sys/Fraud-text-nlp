@@ -2,7 +2,7 @@
 Script de retraining automatique — TF-IDF + BERT conditionnel.
 Logique :
   1. Réentraîne TF-IDF (rapide)
-  2. Si F1_tfidf < 0.95 → réentraîne BERT sur GPU
+  2. Si F1_tfidf < 0.92 → réentraîne BERT sur GPU
   3. Promeut le meilleur modèle
   4. Log dans MLflow
 """
@@ -35,7 +35,7 @@ VEC_PATH           = os.path.join(BASE_DIR, "models/tfidf_vectorizer.joblib")
 BERT_PATH          = os.path.join(BASE_DIR, "models/bert")
 CONFIG_PATH        = os.path.join(BASE_DIR, "configs/config.yml")
 F1_MIN_IMPROVEMENT = 0.001
-F1_BERT_THRESHOLD  = 0.95  # déclenche le retraining BERT si TF-IDF < ce seuil
+F1_BERT_THRESHOLD  = 0.92  # déclenche le retraining BERT si TF-IDF < ce seuil
 # Dossier plots : priorité au chemin monté dans le conteneur Airflow,
 # sinon fallback sur docs/images/ local
 PLOTS_DIR = (
