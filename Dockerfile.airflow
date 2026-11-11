@@ -18,3 +18,7 @@ RUN pip install --no-cache-dir transformers
 # Client MLflow aligné sur le serveur (compose.yml : mlflow==3.10.1).
 # Couche séparée pour ne pas invalider le cache de la couche torch (~2,5 Go).
 RUN pip install --no-cache-dir "mlflow==3.10.1"
+
+# Dossier de la base SQLite Airflow, créé par l'utilisateur airflow : le volume
+# nommé airflow_data monté dessus hérite de ces droits (sinon root → non inscriptible).
+RUN mkdir -p /opt/airflow/db
