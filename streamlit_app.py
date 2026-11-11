@@ -22,10 +22,11 @@ MLFLOW_URL   = os.environ.get("MLFLOW_URI",   "http://mlflow:5000")
 AIRFLOW_URL  = os.environ.get("AIRFLOW_URL",  "http://airflow:8080")
 LOG_PATH     = os.environ.get("LOG_PATH",     "/app/logs/predictions.jsonl")
 IMAGES_DIR   = os.environ.get("IMAGES_DIR",   "/app/docs/images")
-AIRFLOW_AUTH = (
-    os.environ.get("AIRFLOW_USER",     "admin"),
-    os.environ.get("AIRFLOW_PASSWORD", "admin"),
-)
+# Identifiants Airflow : uniquement depuis l'environnement (.env via compose.yml),
+# jamais en dur dans le code. Absents → appels Airflow sans auth (refusés en 401).
+_AIRFLOW_USER     = os.environ.get("AIRFLOW_USER")
+_AIRFLOW_PASSWORD = os.environ.get("AIRFLOW_PASSWORD")
+AIRFLOW_AUTH = (_AIRFLOW_USER, _AIRFLOW_PASSWORD) if _AIRFLOW_USER and _AIRFLOW_PASSWORD else None
 
 st.set_page_config(
     page_title="Fraud Detection NLP",

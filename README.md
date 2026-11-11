@@ -108,14 +108,24 @@ pip install -r requirements.txt
 
 Les credentials sont externalisés dans un fichier `.env` **non versionné** (présent dans `.gitignore`).
 
+Partir du modèle `.env.example` et y mettre vos propres valeurs :
+
 ```dotenv
 # Airflow
-AIRFLOW_USER=admin
-AIRFLOW_PASSWORD=admin
-AIRFLOW_EMAIL=admin@fraud.local
+AIRFLOW_USER=<votre_utilisateur>
+AIRFLOW_PASSWORD=<mot_de_passe_fort>
+AIRFLOW_EMAIL=<votre_email>
 ```
 
-Ce fichier est automatiquement lu par Docker Compose (`env_file` ou interpolation `${VAR}`) et par Streamlit via `os.environ.get()`. Pour changer les credentials, modifier uniquement ce fichier.
+Ce fichier est lu par Docker Compose (interpolation `${VAR}`), qui transmet les valeurs à Airflow et à Streamlit (`os.environ.get()`, sans valeur par défaut dans le code). Pour changer les credentials, modifier uniquement ce fichier.
+
+> **Ne jamais écrire de vrais identifiants dans le README, le code ou `.env.example`.**
+>
+> **Changer le mot de passe d'un utilisateur Airflow existant** : la base Airflow étant persistée (volume `airflow_data`), modifier `.env` ne suffit pas, l'utilisateur existe déjà. Après avoir mis à jour `.env` :
+> ```bash
+> docker exec fraud-airflow airflow users reset-password -u "$AIRFLOW_USER" -p "$AIRFLOW_PASSWORD"
+> docker compose up -d streamlit   # Streamlit relit le nouveau mot de passe
+> ```
 
 > **Note** : Elasticsearch n'a pas d'authentification en développement (`xpack.security.enabled=false`). MLflow et FastAPI sont accessibles sans auth sur le réseau Docker interne.
 
